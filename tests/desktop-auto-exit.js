@@ -1,5 +1,5 @@
 const { spawn, spawnSync } = require('node:child_process')
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = require('node:fs')
+const { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const electron = require('electron')
@@ -65,7 +65,12 @@ async function main () {
 
   const child = spawn(electron, ['.'], {
     cwd: root,
-    env: { ...process.env, SOUND_STITCH_DATA_DIR: temp, SOUND_STITCH_SKIP_REVEAL: '1' },
+    env: {
+      ...process.env,
+      SOUND_STITCH_DATA_DIR: temp,
+      SOUND_STITCH_VIDEO_OUTPUT_DIR: path.join(temp, 'videos'),
+      SOUND_STITCH_SKIP_REVEAL: '1'
+    },
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -78,9 +83,11 @@ async function main () {
     const response = await fetch(`http://127.0.0.1:${port}/api/render`, { method: 'POST', body: form })
     const payload = await response.json()
     if (!response.ok) throw new Error(payload.error)
-    await poll(port, payload.jobId)
+    const job = await poll(port, payload.jobId)
+    const savedVideo = path.join(temp, 'videos', job.result.filename)
+    if (!existsSync(savedVideo)) throw new Error('완성 영상이 지정된 동영상 폴더에 저장되지 않았습니다.')
     await waitForExit(child)
-    console.log('✓ desktop: 영상 제작 완료 후 자동 종료 확인')
+    console.log('✓ desktop: 지정 동영상 폴더 저장 및 제작 완료 후 자동 종료 확인')
   } finally {
     if (!child.killed) child.kill()
     rmSync(temp, { recursive: true, force: true })

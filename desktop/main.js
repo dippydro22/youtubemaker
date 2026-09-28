@@ -16,6 +16,7 @@ app.on('second-instance', () => {
 
 async function createWindow () {
   process.env.SOUND_STITCH_DATA_DIR ||= path.join(app.getPath('userData'), 'data')
+  process.env.SOUND_STITCH_VIDEO_OUTPUT_DIR ||= path.join(app.getPath('videos'), 'Sound Stitch')
   const { setLifecycleHooks, startServer } = require('../server')
   setLifecycleHooks({
     onVideoComplete: videoPath => {

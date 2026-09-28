@@ -14,12 +14,13 @@ const ROOT = __dirname
 const DATA = process.env.SOUND_STITCH_DATA_DIR || path.join(ROOT, 'data')
 const TRACKS_DIR = path.join(DATA, 'tracks')
 const OUTPUTS_DIR = path.join(DATA, 'outputs')
+const VIDEO_OUTPUTS_DIR = process.env.SOUND_STITCH_VIDEO_OUTPUT_DIR || OUTPUTS_DIR
 const UPLOADS_DIR = path.join(DATA, 'uploads')
 const TRACKS_DB = path.join(DATA, 'tracks.json')
 const SESSION_DB = path.join(DATA, 'session.json')
 const YTDLP = packagedPath(path.join(ROOT, 'node_modules', 'youtube-dl-exec', 'bin', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp'))
 
-for (const dir of [DATA, TRACKS_DIR, OUTPUTS_DIR, UPLOADS_DIR]) mkdirSync(dir, { recursive: true })
+for (const dir of [DATA, TRACKS_DIR, OUTPUTS_DIR, VIDEO_OUTPUTS_DIR, UPLOADS_DIR]) mkdirSync(dir, { recursive: true })
 
 const jobs = new Map()
 let tracks = loadTracks()
@@ -302,7 +303,7 @@ async function render (job, mode, rawItems, imageFile) {
     }
 
     if (!imageFile) throw new Error('영상에 사용할 이미지를 선택해 주세요.')
-    const video = path.join(OUTPUTS_DIR, `sound-stitch-${stamp}.mp4`)
+    const video = path.join(VIDEO_OUTPUTS_DIR, `sound-stitch-${stamp}.mp4`)
     captionFile = path.join(UPLOADS_DIR, `captions-${job.id}.ass`)
     const hasCaptions = createCaptionFile(items, captionFile)
     const videoFilter = [
@@ -317,7 +318,7 @@ async function render (job, mode, rawItems, imageFile) {
       '-c:v', 'libx264', '-tune', 'stillimage', '-vf', videoFilter.join(','),
       '-c:a', 'aac', '-b:a', '256k', '-shortest', '-movflags', '+faststart', video
     ], job, 55, 43)
-    updateJob(job, { status: 'done', progress: 100, message: 'MP4 영상 완성', result: { url: `/media/outputs/${path.basename(video)}`, filename: path.basename(video), kind: 'MP4' } })
+    updateJob(job, { status: 'done', progress: 100, message: 'MP4 영상 완성', result: { url: `/video-output/${path.basename(video)}`, filename: path.basename(video), kind: 'MP4' } })
     if (typeof lifecycleHooks.onVideoComplete === 'function') lifecycleHooks.onVideoComplete(video)
   } catch (error) {
     updateJob(job, { status: 'error', message: cleanError(error) })
@@ -339,6 +340,7 @@ const upload = multer({
 app.use(express.json({ limit: '1mb' }))
 app.use(express.static(path.join(ROOT, 'public')))
 app.use('/media', express.static(DATA, { fallthrough: false }))
+app.use('/video-output', express.static(VIDEO_OUTPUTS_DIR, { fallthrough: false }))
 
 app.get('/api/health', (_req, res) => res.json({ ok: Boolean(ffmpegPath && existsSync(ffmpegPath) && existsSync(YTDLP)) }))
 app.get('/api/tracks', (_req, res) => res.json({ tracks: tracks.map(publicTrack) }))
