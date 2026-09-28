@@ -1,0 +1,279 @@
+const express = require('express')
+const multer = require('multer')
+const archiver = require('archiver')
+const { spawn } = require('node:child_process')
+const { createWriteStream, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } = require('node:fs')
+const path = require('node:path')
+const crypto = require('node:crypto')
+const packagedPath = file => file.includes('app.asar') ? file.replace('app.asar', 'app.asar.unpacked') : file
+const ffmpegPath = packagedPath(require('ffmpeg-static'))
+
+const app = express()
+const PORT = Number(process.env.PORT || 4173)
+const ROOT = __dirname
+const DATA = process.env.SOUND_STITCH_DATA_DIR || path.join(ROOT, 'data')
+const TRACKS_DIR = path.join(DATA, 'tracks')
+const OUTPUTS_DIR = path.join(DATA, 'outputs')
+const UPLOADS_DIR = path.join(DATA, 'uploads')
+const TRACKS_DB = path.join(DATA, 'tracks.json')
+const YTDLP = packagedPath(path.join(ROOT, 'node_modules', 'youtube-dl-exec', 'bin', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp'))
+
+for (const dir of [DATA, TRACKS_DIR, OUTPUTS_DIR, UPLOADS_DIR]) mkdirSync(dir, { recursive: true })
+
+const jobs = new Map()
+let tracks = loadTracks()
+
+function loadTracks () {
+  try {
+    return JSON.parse(readFileSync(TRACKS_DB, 'utf8')).filter(track => existsSync(track.file))
+  } catch {
+    return []
+  }
+}
+
+function saveTracks () {
+  writeFileSync(TRACKS_DB, JSON.stringify(tracks, null, 2))
+}
+
+function id () {
+  return crypto.randomBytes(8).toString('hex')
+}
+
+function publicTrack (track) {
+  return {
+    id: track.id,
+    title: track.title,
+    duration: track.duration,
+    sourceUrl: track.sourceUrl,
+    thumbnail: track.thumbnail,
+    audioUrl: `/media/tracks/${path.basename(track.file)}`
+  }
+}
+
+function isYouTubeUrl (value) {
+  try {
+    const url = new URL(value)
+    const host = url.hostname.toLowerCase().replace(/^www\./, '')
+    return url.protocol === 'https:' && ['youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'].includes(host)
+  } catch {
+    return false
+  }
+}
+
+function cleanError (error) {
+  const text = String(error?.message || error || '알 수 없는 오류')
+  if (/sign in|cookies|bot/i.test(text)) return '이 영상은 로그인 또는 추가 인증이 필요해 가져올 수 없습니다.'
+  if (/private video/i.test(text)) return '비공개 영상은 가져올 수 없습니다.'
+  if (/copyright|unavailable|not available/i.test(text)) return '이 영상은 현재 다운로드할 수 없습니다.'
+  return text.split('\n').slice(-3).join(' ').slice(0, 360)
+}
+
+function createJob (type, message) {
+  const job = { id: id(), type, status: 'working', progress: 2, message, createdAt: Date.now() }
+  jobs.set(job.id, job)
+  return job
+}
+
+function updateJob (job, patch) {
+  Object.assign(job, patch)
+}
+
+function run (command, args, onLine) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { windowsHide: true })
+    let stdout = ''
+    let stderr = ''
+    const read = (chunk, target) => {
+      const text = chunk.toString()
+      if (target === 'stdout') stdout += text
+      else stderr += text
+      if (onLine) text.split(/\r?\n/).filter(Boolean).forEach(onLine)
+    }
+    child.stdout.on('data', chunk => read(chunk, 'stdout'))
+    child.stderr.on('data', chunk => read(chunk, 'stderr'))
+    child.on('error', reject)
+    child.on('close', code => {
+      if (code === 0) resolve({ stdout, stderr })
+      else reject(new Error(stderr || stdout || `${path.basename(command)} 종료 코드 ${code}`))
+    })
+  })
+}
+
+async function extractTrack (job, url) {
+  try {
+    updateJob(job, { progress: 8, message: '영상 정보를 확인하고 있어요' })
+    const infoResult = await run(YTDLP, ['--dump-single-json', '--no-playlist', '--no-warnings', url])
+    const info = JSON.parse(infoResult.stdout)
+    const trackId = id()
+    const outputTemplate = path.join(TRACKS_DIR, `${trackId}.%(ext)s`)
+    updateJob(job, { progress: 18, message: '음원을 내려받고 있어요' })
+
+    await run(YTDLP, [
+      '--no-playlist', '--newline', '--no-warnings',
+      '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0',
+      '--ffmpeg-location', ffmpegPath, '--output', outputTemplate, url
+    ], line => {
+      const match = line.match(/\[download\]\s+([\d.]+)%/)
+      if (match) updateJob(job, { progress: 18 + Math.round(Number(match[1]) * 0.72), message: `음원 추출 중 · ${Math.round(Number(match[1]))}%` })
+      if (/ExtractAudio/.test(line)) updateJob(job, { progress: 93, message: 'MP3로 변환하고 있어요' })
+    })
+
+    const file = path.join(TRACKS_DIR, `${trackId}.mp3`)
+    if (!existsSync(file)) throw new Error('추출된 MP3 파일을 찾지 못했습니다.')
+    const track = {
+      id: trackId,
+      title: String(info.title || '제목 없는 영상'),
+      duration: Number(info.duration || 0),
+      sourceUrl: url,
+      thumbnail: info.thumbnail || '',
+      file
+    }
+    tracks.push(track)
+    saveTracks()
+    updateJob(job, { status: 'done', progress: 100, message: '음원 준비 완료', result: { track: publicTrack(track) } })
+  } catch (error) {
+    updateJob(job, { status: 'error', message: cleanError(error) })
+  }
+}
+
+function runFfmpeg (args, job, start = 10, span = 80) {
+  return run(ffmpegPath, ['-hide_banner', '-y', ...args], line => {
+    if (/time=/.test(line)) updateJob(job, { progress: Math.min(start + span - 2, job.progress + 1), message: '순서대로 이어 붙이고 있어요' })
+  })
+}
+
+async function mixTracks (items, output, job) {
+  const inputs = []
+  const filters = []
+  items.forEach((item, index) => {
+    inputs.push('-i', item.track.file)
+    const volume = Math.max(0, Math.min(2, Number(item.volume) || 0))
+    filters.push(`[${index}:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${volume}[a${index}]`)
+  })
+  const labels = items.map((_, index) => `[a${index}]`).join('')
+  const concat = items.length === 1 ? '[a0]anull[outa]' : `${labels}concat=n=${items.length}:v=0:a=1[outa]`
+  await runFfmpeg([...inputs, '-filter_complex', `${filters.join(';')};${concat}`, '-map', '[outa]', '-codec:a', 'libmp3lame', '-b:a', '256k', output], job)
+}
+
+function makeZip (items, output) {
+  return new Promise((resolve, reject) => {
+    const stream = createWriteStream(output)
+    const archive = archiver('zip', { zlib: { level: 6 } })
+    stream.on('close', resolve)
+    stream.on('error', reject)
+    archive.on('error', reject)
+    archive.pipe(stream)
+    const used = new Set()
+    items.forEach((item, index) => {
+      let safe = item.track.title.replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 80) || `음원-${index + 1}`
+      if (used.has(safe)) safe += `-${index + 1}`
+      used.add(safe)
+      archive.file(item.track.file, { name: `${String(index + 1).padStart(2, '0')} ${safe}.mp3` })
+    })
+    archive.finalize()
+  })
+}
+
+async function render (job, mode, rawItems, imageFile) {
+  try {
+    const items = rawItems.map(item => ({
+      track: tracks.find(track => track.id === item.id),
+      volume: item.volume
+    })).filter(item => item.track)
+    if (!items.length) throw new Error('처리할 음원이 없습니다.')
+    updateJob(job, { progress: 8, message: '출력 파일을 준비하고 있어요' })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+
+    if (mode === 'extract') {
+      const output = path.join(OUTPUTS_DIR, `sound-stitch-${stamp}.zip`)
+      await makeZip(items, output)
+      return updateJob(job, { status: 'done', progress: 100, message: '개별 음원 ZIP 완성', result: { url: `/media/outputs/${path.basename(output)}`, filename: path.basename(output), kind: 'ZIP' } })
+    }
+
+    const mixed = path.join(OUTPUTS_DIR, `sound-stitch-${stamp}.mp3`)
+    updateJob(job, { progress: 12, message: '음량을 적용해 이어 붙이고 있어요' })
+    await mixTracks(items, mixed, job)
+    if (mode === 'mix') {
+      return updateJob(job, { status: 'done', progress: 100, message: '믹스 MP3 완성', result: { url: `/media/outputs/${path.basename(mixed)}`, filename: path.basename(mixed), kind: 'MP3' } })
+    }
+
+    if (!imageFile) throw new Error('영상에 사용할 이미지를 선택해 주세요.')
+    const video = path.join(OUTPUTS_DIR, `sound-stitch-${stamp}.mp4`)
+    updateJob(job, { progress: 55, message: '이미지와 음원으로 영상을 만들고 있어요' })
+    await runFfmpeg([
+      '-loop', '1', '-i', imageFile, '-i', mixed,
+      '-c:v', 'libx264', '-tune', 'stillimage', '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
+      '-c:a', 'aac', '-b:a', '256k', '-shortest', '-movflags', '+faststart', video
+    ], job, 55, 43)
+    updateJob(job, { status: 'done', progress: 100, message: 'MP4 영상 완성', result: { url: `/media/outputs/${path.basename(video)}`, filename: path.basename(video), kind: 'MP4' } })
+  } catch (error) {
+    updateJob(job, { status: 'error', message: cleanError(error) })
+  }
+}
+
+const upload = multer({
+  dest: UPLOADS_DIR,
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (_req, file, done) => done(null, /^image\/(jpeg|png|webp)$/.test(file.mimetype))
+})
+
+app.use(express.json({ limit: '1mb' }))
+app.use(express.static(path.join(ROOT, 'public')))
+app.use('/media', express.static(DATA, { fallthrough: false }))
+
+app.get('/api/health', (_req, res) => res.json({ ok: Boolean(ffmpegPath && existsSync(ffmpegPath) && existsSync(YTDLP)) }))
+app.get('/api/tracks', (_req, res) => res.json({ tracks: tracks.map(publicTrack) }))
+
+app.post('/api/tracks', (req, res) => {
+  const url = String(req.body.url || '').trim()
+  if (!isYouTubeUrl(url)) return res.status(400).json({ error: '올바른 YouTube 주소를 입력해 주세요.' })
+  const job = createJob('extract', '추출을 시작할게요')
+  res.status(202).json({ jobId: job.id })
+  extractTrack(job, url)
+})
+
+app.delete('/api/tracks/:id', (req, res) => {
+  const target = tracks.find(track => track.id === req.params.id)
+  const before = tracks.length
+  tracks = tracks.filter(track => track.id !== req.params.id)
+  if (before === tracks.length) return res.status(404).json({ error: '음원을 찾지 못했습니다.' })
+  if (target?.file && existsSync(target.file)) {
+    try { unlinkSync(target.file) } catch {}
+  }
+  saveTracks()
+  res.json({ ok: true })
+})
+
+app.get('/api/jobs/:id', (req, res) => {
+  const job = jobs.get(req.params.id)
+  if (!job) return res.status(404).json({ error: '작업 상태를 찾지 못했습니다.' })
+  res.json(job)
+})
+
+app.post('/api/render', upload.single('image'), (req, res) => {
+  let items
+  try { items = JSON.parse(req.body.items || '[]') } catch { items = [] }
+  const mode = ['extract', 'mix', 'video'].includes(req.body.mode) ? req.body.mode : 'mix'
+  if (!items.length) return res.status(400).json({ error: '한 개 이상의 음원을 등록해 주세요.' })
+  if (mode === 'video' && !req.file) return res.status(400).json({ error: '영상에 사용할 이미지를 선택해 주세요.' })
+  const job = createJob('render', '출력 작업을 시작할게요')
+  res.status(202).json({ jobId: job.id })
+  render(job, mode, items, req.file?.path)
+})
+
+app.use((error, _req, res, _next) => res.status(500).json({ error: cleanError(error) }))
+
+function startServer (port = PORT) {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, '127.0.0.1', () => {
+      const address = server.address()
+      console.log(`Sound Stitch 실행 중: http://127.0.0.1:${address.port}`)
+      resolve(server)
+    })
+    server.once('error', reject)
+  })
+}
+
+if (require.main === module) startServer()
+
+module.exports = { app, startServer }

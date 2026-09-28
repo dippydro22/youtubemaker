@@ -1,0 +1,6 @@
+allowBuilds:
+  electron: true
+  electron-builder: true
+  electron-winstaller: true
+  ffmpeg-static: true
+  youtube-dl-exec: true
