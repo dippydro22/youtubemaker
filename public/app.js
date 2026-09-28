@@ -1,6 +1,7 @@
 const state = {
   tracks: [],
   volumes: {},
+  captions: {},
   image: null,
   busy: false
 }
@@ -108,6 +109,18 @@ function renderTracks () {
       setPreviewVolume(card.querySelector('audio'), volume.value)
     })
 
+    state.captions[track.id] ||= { enabled: true, text: track.title }
+    const captionEnabled = card.querySelector('.caption-enabled')
+    const captionText = card.querySelector('.caption-text')
+    captionEnabled.checked = state.captions[track.id].enabled
+    captionText.value = state.captions[track.id].text
+    captionText.disabled = !captionEnabled.checked
+    captionEnabled.addEventListener('change', () => {
+      state.captions[track.id].enabled = captionEnabled.checked
+      captionText.disabled = !captionEnabled.checked
+    })
+    captionText.addEventListener('input', () => { state.captions[track.id].text = captionText.value })
+
     const up = card.querySelector('.move-up')
     const down = card.querySelector('.move-down')
     up.disabled = index === 0
@@ -131,6 +144,7 @@ async function removeTrack (trackId) {
     await request(`/api/tracks/${trackId}`, { method: 'DELETE' })
     state.tracks = state.tracks.filter(track => track.id !== trackId)
     delete state.volumes[trackId]
+    delete state.captions[trackId]
     renderTracks()
     showToast('목록에서 음원을 삭제했습니다.')
   } catch (error) {
@@ -178,6 +192,7 @@ els.addForm.addEventListener('submit', async event => {
     const result = await pollJob(jobId, job => setAddStatus(`${job.message} · ${job.progress}%`))
     state.tracks.push(result.track)
     state.volumes[result.track.id] = 100
+    state.captions[result.track.id] = { enabled: true, text: result.track.title }
     els.urlInput.value = ''
     setAddStatus('음원 준비가 끝났습니다. 바로 미리 들을 수 있어요.')
     renderTracks()
@@ -244,7 +259,12 @@ els.renderButton.addEventListener('click', async () => {
   const mode = currentMode()
   const form = new FormData()
   form.append('mode', mode)
-  form.append('items', JSON.stringify(state.tracks.map(track => ({ id: track.id, volume: (state.volumes[track.id] ?? 100) / 100 }))))
+  form.append('items', JSON.stringify(state.tracks.map(track => ({
+    id: track.id,
+    volume: (state.volumes[track.id] ?? 100) / 100,
+    showCaption: state.captions[track.id]?.enabled !== false,
+    caption: state.captions[track.id]?.text || track.title
+  }))))
   if (mode === 'video' && state.image) form.append('image', state.image)
 
   try {
@@ -271,7 +291,10 @@ async function init () {
     const [{ tracks }, health] = await Promise.all([request('/api/tracks'), request('/api/health')])
     if (!health.ok) throw new Error('음원 처리 도구를 찾지 못했습니다. 다시 설치해 주세요.')
     state.tracks = tracks
-    tracks.forEach(track => { state.volumes[track.id] = 100 })
+    tracks.forEach(track => {
+      state.volumes[track.id] = 100
+      state.captions[track.id] = { enabled: true, text: track.title }
+    })
     renderTracks()
   } catch (error) {
     showToast(error.message)

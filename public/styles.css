@@ -106,6 +106,12 @@ a { color: inherit; text-decoration: none; }
 .volume-row { display: grid; grid-template-columns: 18px minmax(100px, 1fr) 46px; align-items: center; gap: 8px; margin-top: 7px; color: #708198; }
 .volume-row input { width: 100%; height: 3px; accent-color: var(--teal); cursor: pointer; display: block; }
 .volume-row output { color: #a7b6c7; text-align: right; font: 600 .68rem "Manrope"; }
+.caption-row { display: grid; grid-template-columns: auto minmax(160px, 1fr); align-items: center; gap: 12px; margin-top: 10px; }
+.caption-toggle { display: flex; align-items: center; gap: 7px; color: #91a2b6; font-size: .7rem; cursor: pointer; white-space: nowrap; }
+.caption-toggle input { width: 15px; height: 15px; accent-color: var(--teal); }
+.caption-field input { width: 100%; height: 34px; border: 1px solid #273950; border-radius: 8px; padding: 0 10px; color: #dfe8f1; background: #0d1a2a; outline: none; font-size: .72rem; }
+.caption-field input:focus { border-color: var(--teal); }
+.caption-field input:disabled { opacity: .4; }
 .remove-button { font-size: 1.3rem; width: 32px; height: 32px; border-radius: 8px; }
 .remove-button:hover { color: var(--danger); background: rgba(255,111,120,.08); }
 
@@ -195,6 +201,7 @@ a { color: inherit; text-decoration: none; }
   .order-controls { grid-row: 1 / span 2; }
   .track-main { grid-column: 2 / span 2; }
   .remove-button { grid-column: 3; grid-row: 1; }
+  .caption-row { grid-template-columns: 1fr; gap: 7px; }
   .export-footer { align-items: stretch; flex-direction: column; }
   .render-button { width: 100%; min-width: 0; }
 }

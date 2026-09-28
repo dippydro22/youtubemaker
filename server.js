@@ -174,11 +174,62 @@ function makeZip (items, output) {
   })
 }
 
+function assTime (seconds) {
+  const centiseconds = Math.max(0, Math.round(seconds * 100))
+  const hours = Math.floor(centiseconds / 360000)
+  const minutes = Math.floor((centiseconds % 360000) / 6000)
+  const secs = Math.floor((centiseconds % 6000) / 100)
+  const fraction = centiseconds % 100
+  return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(fraction).padStart(2, '0')}`
+}
+
+function assText (value) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/{/g, '\\{').replace(/}/g, '\\}').replace(/\r?\n/g, '\\N')
+}
+
+function createCaptionFile (items, file) {
+  let cursor = 0
+  const events = []
+  items.forEach(item => {
+    const start = cursor
+    cursor += Math.max(0, Number(item.track.duration) || 0)
+    if (item.showCaption && item.caption && cursor > start) {
+      events.push(`Dialogue: 0,${assTime(start)},${assTime(cursor)},Center,,0,0,0,,${assText(item.caption)}`)
+    }
+  })
+  if (!events.length) return false
+  const contents = [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    'PlayResX: 1920',
+    'PlayResY: 1080',
+    'WrapStyle: 2',
+    'ScaledBorderAndShadow: yes',
+    '',
+    '[V4+ Styles]',
+    'Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding',
+    'Style: Center,Malgun Gothic,64,&H00FFFFFF,&H000000FF,&H00000000,&H88000000,-1,0,0,0,100,100,0,0,3,18,0,5,110,110,80,1',
+    '',
+    '[Events]',
+    'Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text',
+    ...events
+  ].join('\r\n')
+  writeFileSync(file, `\uFEFF${contents}`, 'utf8')
+  return true
+}
+
+function ffmpegFilterPath (file) {
+  return file.replace(/\\/g, '/').replace(/^([A-Za-z]):/, '$1\\:').replace(/'/g, "\\'")
+}
+
 async function render (job, mode, rawItems, imageFile) {
+  let captionFile
   try {
     const items = rawItems.map(item => ({
       track: tracks.find(track => track.id === item.id),
-      volume: item.volume
+      volume: item.volume,
+      showCaption: item.showCaption !== false,
+      caption: String(item.caption || '').trim().slice(0, 120)
     })).filter(item => item.track)
     if (!items.length) throw new Error('처리할 음원이 없습니다.')
     updateJob(job, { progress: 8, message: '출력 파일을 준비하고 있어요' })
@@ -199,15 +250,29 @@ async function render (job, mode, rawItems, imageFile) {
 
     if (!imageFile) throw new Error('영상에 사용할 이미지를 선택해 주세요.')
     const video = path.join(OUTPUTS_DIR, `sound-stitch-${stamp}.mp4`)
+    captionFile = path.join(UPLOADS_DIR, `captions-${job.id}.ass`)
+    const hasCaptions = createCaptionFile(items, captionFile)
+    const videoFilter = [
+      'scale=1920:1080:force_original_aspect_ratio=decrease',
+      'pad=1920:1080:(ow-iw)/2:(oh-ih)/2',
+      'format=yuv420p'
+    ]
+    if (hasCaptions) videoFilter.push(`ass=filename='${ffmpegFilterPath(captionFile)}'`)
     updateJob(job, { progress: 55, message: '이미지와 음원으로 영상을 만들고 있어요' })
     await runFfmpeg([
       '-loop', '1', '-i', imageFile, '-i', mixed,
-      '-c:v', 'libx264', '-tune', 'stillimage', '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p',
+      '-c:v', 'libx264', '-tune', 'stillimage', '-vf', videoFilter.join(','),
       '-c:a', 'aac', '-b:a', '256k', '-shortest', '-movflags', '+faststart', video
     ], job, 55, 43)
     updateJob(job, { status: 'done', progress: 100, message: 'MP4 영상 완성', result: { url: `/media/outputs/${path.basename(video)}`, filename: path.basename(video), kind: 'MP4' } })
   } catch (error) {
     updateJob(job, { status: 'error', message: cleanError(error) })
+  } finally {
+    for (const temporary of [imageFile, captionFile]) {
+      if (temporary && existsSync(temporary)) {
+        try { unlinkSync(temporary) } catch {}
+      }
+    }
   }
 }
 

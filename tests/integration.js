@@ -1,4 +1,5 @@
 const { spawn, spawnSync } = require('node:child_process')
+const { createHash } = require('node:crypto')
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSync, rmSync } = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -17,6 +18,10 @@ function ff (args) {
 
 function assertFile (file, label) {
   if (!existsSync(file) || statSync(file).size < 100) throw new Error(`${label} 파일이 생성되지 않았습니다.`)
+}
+
+function hashFile (file) {
+  return createHash('sha256').update(readFileSync(file)).digest('hex')
 }
 
 async function waitForServer () {
@@ -76,12 +81,23 @@ async function main () {
     if (!page.ok || !(await page.text()).includes('Sound Stitch')) throw new Error('메인 화면을 불러오지 못했습니다.')
     const tracks = await (await fetch(`http://127.0.0.1:${port}/api/tracks`)).json()
     if (tracks.tracks.length !== 2) throw new Error('저장된 음원 목록을 불러오지 못했습니다.')
-    const items = [{ id: 'tone-a', volume: 0.8 }, { id: 'tone-b', volume: 1.2 }]
+    const items = [
+      { id: 'tone-a', volume: 0.8, showCaption: true, caption: '첫 번째 영상' },
+      { id: 'tone-b', volume: 1.2, showCaption: true, caption: '두 번째 영상' }
+    ]
 
     for (const [mode, image] of [['extract'], ['mix'], ['video', cover]]) {
       const result = await render(mode, items, image)
       const file = path.join(temp, 'outputs', result.filename)
       assertFile(file, mode)
+      if (mode === 'video') {
+        const firstFrame = path.join(temp, 'caption-first.png')
+        const secondFrame = path.join(temp, 'caption-second.png')
+        ff(['-ss', '0.5', '-i', file, '-frames:v', '1', firstFrame])
+        ff(['-ss', '1.5', '-i', file, '-frames:v', '1', secondFrame])
+        if (hashFile(firstFrame) === hashFile(secondFrame)) throw new Error('시간대별 제목이 전환되지 않았습니다.')
+        console.log('✓ video captions: 시간대별 중앙 제목 전환 확인')
+      }
       console.log(`✓ ${mode}: ${result.filename} (${statSync(file).size} bytes)`)
     }
     console.log('✓ API, 개별 ZIP, 믹스 MP3, 이미지 MP4 통합 검증 완료')
