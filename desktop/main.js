@@ -14,8 +14,14 @@ app.on('second-instance', () => {
 })
 
 async function createWindow () {
-  process.env.SOUND_STITCH_DATA_DIR = path.join(app.getPath('userData'), 'data')
-  const { startServer } = require('../server')
+  process.env.SOUND_STITCH_DATA_DIR ||= path.join(app.getPath('userData'), 'data')
+  const { setLifecycleHooks, startServer } = require('../server')
+  setLifecycleHooks({
+    onVideoComplete: videoPath => {
+      if (process.env.SOUND_STITCH_SKIP_REVEAL !== '1') shell.showItemInFolder(videoPath)
+      setTimeout(() => app.quit(), 2500)
+    }
+  })
   localServer = await startServer(0)
   const port = localServer.address().port
 

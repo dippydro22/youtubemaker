@@ -3,7 +3,8 @@ const state = {
   volumes: {},
   captions: {},
   image: null,
-  busy: false
+  busy: false,
+  sessionReady: false
 }
 
 const $ = selector => document.querySelector(selector)
@@ -80,6 +81,35 @@ function currentMode () {
   return document.querySelector('input[name="mode"]:checked').value
 }
 
+let sessionSaveTimer
+
+function sessionPayload () {
+  return {
+    order: state.tracks.map(track => track.id),
+    settings: Object.fromEntries(state.tracks.map(track => [track.id, {
+      volume: state.volumes[track.id] ?? 100,
+      captionEnabled: state.captions[track.id]?.enabled !== false,
+      caption: state.captions[track.id]?.text || track.title
+    }]))
+  }
+}
+
+async function saveSession () {
+  if (!state.sessionReady) return
+  clearTimeout(sessionSaveTimer)
+  await request('/api/session', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(sessionPayload())
+  })
+}
+
+function scheduleSessionSave () {
+  if (!state.sessionReady) return
+  clearTimeout(sessionSaveTimer)
+  sessionSaveTimer = setTimeout(() => saveSession().catch(() => {}), 350)
+}
+
 function updateSummary () {
   els.trackCount.textContent = state.tracks.length
   els.totalDuration.textContent = formatTime(state.tracks.reduce((sum, track) => sum + (track.duration || 0), 0))
@@ -107,6 +137,7 @@ function renderTracks () {
       state.volumes[track.id] = Number(volume.value)
       output.value = `${volume.value}%`
       setPreviewVolume(card.querySelector('audio'), volume.value)
+      scheduleSessionSave()
     })
 
     state.captions[track.id] ||= { enabled: true, text: track.title }
@@ -118,8 +149,12 @@ function renderTracks () {
     captionEnabled.addEventListener('change', () => {
       state.captions[track.id].enabled = captionEnabled.checked
       captionText.disabled = !captionEnabled.checked
+      scheduleSessionSave()
     })
-    captionText.addEventListener('input', () => { state.captions[track.id].text = captionText.value })
+    captionText.addEventListener('input', () => {
+      state.captions[track.id].text = captionText.value
+      scheduleSessionSave()
+    })
 
     const up = card.querySelector('.move-up')
     const down = card.querySelector('.move-down')
@@ -137,6 +172,7 @@ function moveTrack (from, to) {
   const [track] = state.tracks.splice(from, 1)
   state.tracks.splice(to, 0, track)
   renderTracks()
+  scheduleSessionSave()
 }
 
 async function removeTrack (trackId) {
@@ -146,6 +182,7 @@ async function removeTrack (trackId) {
     delete state.volumes[trackId]
     delete state.captions[trackId]
     renderTracks()
+    scheduleSessionSave()
     showToast('목록에서 음원을 삭제했습니다.')
   } catch (error) {
     showToast(error.message)
@@ -196,6 +233,7 @@ els.addForm.addEventListener('submit', async event => {
     els.urlInput.value = ''
     setAddStatus('음원 준비가 끝났습니다. 바로 미리 들을 수 있어요.')
     renderTracks()
+    scheduleSessionSave()
     setTimeout(() => setAddStatus(''), 3500)
     showToast('새 음원을 목록에 추가했습니다.')
   } catch (error) {
@@ -268,6 +306,7 @@ els.renderButton.addEventListener('click', async () => {
   if (mode === 'video' && state.image) form.append('image', state.image)
 
   try {
+    await saveSession()
     const { jobId } = await request('/api/render', { method: 'POST', body: form })
     const result = await pollJob(jobId, showRenderProgress)
     els.renderStatus.hidden = true
@@ -288,13 +327,20 @@ els.renderButton.addEventListener('click', async () => {
 
 async function init () {
   try {
-    const [{ tracks }, health] = await Promise.all([request('/api/tracks'), request('/api/health')])
+    const [{ tracks }, health, session] = await Promise.all([request('/api/tracks'), request('/api/health'), request('/api/session')])
     if (!health.ok) throw new Error('음원 처리 도구를 찾지 못했습니다. 다시 설치해 주세요.')
-    state.tracks = tracks
-    tracks.forEach(track => {
-      state.volumes[track.id] = 100
-      state.captions[track.id] = { enabled: true, text: track.title }
+    const byId = new Map(tracks.map(track => [track.id, track]))
+    state.tracks = (session.order || []).map(trackId => byId.get(trackId)).filter(Boolean)
+    tracks.forEach(track => { if (!state.tracks.some(saved => saved.id === track.id)) state.tracks.push(track) })
+    state.tracks.forEach(track => {
+      const saved = session.settings?.[track.id]
+      state.volumes[track.id] = saved?.volume ?? 100
+      state.captions[track.id] = {
+        enabled: saved?.captionEnabled !== false,
+        text: saved?.caption || track.title
+      }
     })
+    state.sessionReady = true
     renderTracks()
   } catch (error) {
     showToast(error.message)

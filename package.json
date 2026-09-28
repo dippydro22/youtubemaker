@@ -10,7 +10,8 @@
     "dist": "electron-builder --win dir && node scripts/finalize-windows.js",
     "dist:portable": "electron-builder --win portable",
     "check": "node --check server.js && node --check public/app.js",
-    "test": "node tests/integration.js"
+    "test": "node tests/integration.js",
+    "test:desktop": "node tests/desktop-auto-exit.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",

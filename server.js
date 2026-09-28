@@ -16,12 +16,14 @@ const TRACKS_DIR = path.join(DATA, 'tracks')
 const OUTPUTS_DIR = path.join(DATA, 'outputs')
 const UPLOADS_DIR = path.join(DATA, 'uploads')
 const TRACKS_DB = path.join(DATA, 'tracks.json')
+const SESSION_DB = path.join(DATA, 'session.json')
 const YTDLP = packagedPath(path.join(ROOT, 'node_modules', 'youtube-dl-exec', 'bin', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp'))
 
 for (const dir of [DATA, TRACKS_DIR, OUTPUTS_DIR, UPLOADS_DIR]) mkdirSync(dir, { recursive: true })
 
 const jobs = new Map()
 let tracks = loadTracks()
+let lifecycleHooks = {}
 
 function loadTracks () {
   try {
@@ -33,6 +35,37 @@ function loadTracks () {
 
 function saveTracks () {
   writeFileSync(TRACKS_DB, JSON.stringify(tracks, null, 2))
+}
+
+function loadSession () {
+  try {
+    return JSON.parse(readFileSync(SESSION_DB, 'utf8'))
+  } catch {
+    return { order: [], settings: {} }
+  }
+}
+
+function cleanSession (value) {
+  const known = new Set(tracks.map(track => track.id))
+  const order = Array.isArray(value?.order) ? [...new Set(value.order.filter(trackId => known.has(trackId)))] : []
+  tracks.forEach(track => { if (!order.includes(track.id)) order.push(track.id) })
+  const settings = {}
+  for (const trackId of order) {
+    const raw = value?.settings?.[trackId] || {}
+    settings[trackId] = {
+      volume: Math.max(0, Math.min(200, Number(raw.volume) || 0)),
+      captionEnabled: raw.captionEnabled !== false,
+      caption: String(raw.caption || tracks.find(track => track.id === trackId)?.title || '').trim().slice(0, 120)
+    }
+    if (raw.volume == null) settings[trackId].volume = 100
+  }
+  return { order, settings }
+}
+
+function saveSession (value) {
+  const session = cleanSession(value)
+  writeFileSync(SESSION_DB, JSON.stringify(session, null, 2))
+  return session
 }
 
 function id () {
@@ -142,6 +175,11 @@ function runFfmpeg (args, job, start = 10, span = 80) {
   })
 }
 
+function transitionDuration (first, second) {
+  const durations = [first, second].map(item => Number(item.track.duration) || 0).filter(Boolean)
+  return Number(Math.min(3, ...(durations.length ? durations.map(duration => Math.max(0.1, duration / 2)) : [3])).toFixed(2))
+}
+
 async function mixTracks (items, output, job) {
   const inputs = []
   const filters = []
@@ -150,9 +188,17 @@ async function mixTracks (items, output, job) {
     const volume = Math.max(0, Math.min(2, Number(item.volume) || 0))
     filters.push(`[${index}:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${volume}[a${index}]`)
   })
-  const labels = items.map((_, index) => `[a${index}]`).join('')
-  const concat = items.length === 1 ? '[a0]anull[outa]' : `${labels}concat=n=${items.length}:v=0:a=1[outa]`
-  await runFfmpeg([...inputs, '-filter_complex', `${filters.join(';')};${concat}`, '-map', '[outa]', '-codec:a', 'libmp3lame', '-b:a', '256k', output], job)
+  if (items.length === 1) {
+    filters.push('[a0]anull[outa]')
+  } else {
+    let previous = '[a0]'
+    for (let index = 1; index < items.length; index++) {
+      const outputLabel = index === items.length - 1 ? '[outa]' : `[xf${index}]`
+      filters.push(`${previous}[a${index}]acrossfade=d=${transitionDuration(items[index - 1], items[index])}:c1=tri:c2=tri${outputLabel}`)
+      previous = outputLabel
+    }
+  }
+  await runFfmpeg([...inputs, '-filter_complex', filters.join(';'), '-map', '[outa]', '-codec:a', 'libmp3lame', '-b:a', '256k', output], job)
 }
 
 function makeZip (items, output) {
@@ -188,13 +234,20 @@ function assText (value) {
 }
 
 function createCaptionFile (items, file) {
-  let cursor = 0
+  const starts = [0]
+  for (let index = 1; index < items.length; index++) {
+    const previousStart = starts[index - 1]
+    const previousDuration = Math.max(0, Number(items[index - 1].track.duration) || 0)
+    starts.push(Math.max(previousStart, previousStart + previousDuration - transitionDuration(items[index - 1], items[index])))
+  }
   const events = []
-  items.forEach(item => {
-    const start = cursor
-    cursor += Math.max(0, Number(item.track.duration) || 0)
-    if (item.showCaption && item.caption && cursor > start) {
-      events.push(`Dialogue: 0,${assTime(start)},${assTime(cursor)},Center,,0,0,0,,${assText(item.caption)}`)
+  items.forEach((item, index) => {
+    const start = starts[index]
+    const end = index < items.length - 1
+      ? starts[index + 1]
+      : start + Math.max(0, Number(item.track.duration) || 0)
+    if (item.showCaption && item.caption && end > start) {
+      events.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Center,,0,0,0,,${assText(item.caption)}`)
     }
   })
   if (!events.length) return false
@@ -265,6 +318,7 @@ async function render (job, mode, rawItems, imageFile) {
       '-c:a', 'aac', '-b:a', '256k', '-shortest', '-movflags', '+faststart', video
     ], job, 55, 43)
     updateJob(job, { status: 'done', progress: 100, message: 'MP4 영상 완성', result: { url: `/media/outputs/${path.basename(video)}`, filename: path.basename(video), kind: 'MP4' } })
+    if (typeof lifecycleHooks.onVideoComplete === 'function') lifecycleHooks.onVideoComplete(video)
   } catch (error) {
     updateJob(job, { status: 'error', message: cleanError(error) })
   } finally {
@@ -288,6 +342,11 @@ app.use('/media', express.static(DATA, { fallthrough: false }))
 
 app.get('/api/health', (_req, res) => res.json({ ok: Boolean(ffmpegPath && existsSync(ffmpegPath) && existsSync(YTDLP)) }))
 app.get('/api/tracks', (_req, res) => res.json({ tracks: tracks.map(publicTrack) }))
+app.get('/api/session', (_req, res) => res.json(saveSession(loadSession())))
+
+app.put('/api/session', (req, res) => {
+  res.json(saveSession(req.body))
+})
 
 app.post('/api/tracks', (req, res) => {
   const url = String(req.body.url || '').trim()
@@ -339,6 +398,10 @@ function startServer (port = PORT) {
   })
 }
 
+function setLifecycleHooks (hooks = {}) {
+  lifecycleHooks = hooks
+}
+
 if (require.main === module) startServer()
 
-module.exports = { app, startServer }
+module.exports = { app, setLifecycleHooks, startServer }
