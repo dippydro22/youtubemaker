@@ -68,6 +68,7 @@ async function main () {
     env: {
       ...process.env,
       SOUND_STITCH_DATA_DIR: temp,
+      SOUND_STITCH_AUDIO_OUTPUT_DIR: path.join(temp, 'music'),
       SOUND_STITCH_VIDEO_OUTPUT_DIR: path.join(temp, 'videos'),
       SOUND_STITCH_SKIP_REVEAL: '1'
     },
@@ -76,6 +77,17 @@ async function main () {
 
   try {
     const port = await waitForPort(child)
+    const mixForm = new FormData()
+    mixForm.append('mode', 'mix')
+    mixForm.append('items', JSON.stringify([{ id: 'tone', volume: 1, showCaption: true, caption: 'MP3 저장 테스트' }]))
+    const mixResponse = await fetch(`http://127.0.0.1:${port}/api/render`, { method: 'POST', body: mixForm })
+    const mixPayload = await mixResponse.json()
+    if (!mixResponse.ok) throw new Error(mixPayload.error)
+    const mixJob = await poll(port, mixPayload.jobId)
+    const savedAudio = path.join(temp, 'music', mixJob.result.filename)
+    if (!existsSync(savedAudio)) throw new Error('완성 MP3가 지정된 음악 폴더에 저장되지 않았습니다.')
+    if (child.exitCode !== null) throw new Error('MP3 제작 후 앱이 예기치 않게 종료됐습니다.')
+
     const form = new FormData()
     form.append('mode', 'video')
     form.append('items', JSON.stringify([{ id: 'tone', volume: 1, showCaption: true, caption: '자동 종료 테스트' }]))
@@ -87,7 +99,7 @@ async function main () {
     const savedVideo = path.join(temp, 'videos', job.result.filename)
     if (!existsSync(savedVideo)) throw new Error('완성 영상이 지정된 동영상 폴더에 저장되지 않았습니다.')
     await waitForExit(child)
-    console.log('✓ desktop: 지정 동영상 폴더 저장 및 제작 완료 후 자동 종료 확인')
+    console.log('✓ desktop: MP3는 음악 폴더에 저장, MP4는 동영상 폴더에 저장 후 자동 종료 확인')
   } finally {
     if (!child.killed) child.kill()
     rmSync(temp, { recursive: true, force: true })

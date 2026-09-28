@@ -14,13 +14,14 @@ const ROOT = __dirname
 const DATA = process.env.SOUND_STITCH_DATA_DIR || path.join(ROOT, 'data')
 const TRACKS_DIR = path.join(DATA, 'tracks')
 const OUTPUTS_DIR = path.join(DATA, 'outputs')
+const AUDIO_OUTPUTS_DIR = process.env.SOUND_STITCH_AUDIO_OUTPUT_DIR || OUTPUTS_DIR
 const VIDEO_OUTPUTS_DIR = process.env.SOUND_STITCH_VIDEO_OUTPUT_DIR || OUTPUTS_DIR
 const UPLOADS_DIR = path.join(DATA, 'uploads')
 const TRACKS_DB = path.join(DATA, 'tracks.json')
 const SESSION_DB = path.join(DATA, 'session.json')
 const YTDLP = packagedPath(path.join(ROOT, 'node_modules', 'youtube-dl-exec', 'bin', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp'))
 
-for (const dir of [DATA, TRACKS_DIR, OUTPUTS_DIR, VIDEO_OUTPUTS_DIR, UPLOADS_DIR]) mkdirSync(dir, { recursive: true })
+for (const dir of [DATA, TRACKS_DIR, OUTPUTS_DIR, AUDIO_OUTPUTS_DIR, VIDEO_OUTPUTS_DIR, UPLOADS_DIR]) mkdirSync(dir, { recursive: true })
 
 const jobs = new Map()
 let tracks = loadTracks()
@@ -295,11 +296,13 @@ async function render (job, mode, rawItems, imageFile) {
       return updateJob(job, { status: 'done', progress: 100, message: '개별 음원 ZIP 완성', result: { url: `/media/outputs/${path.basename(output)}`, filename: path.basename(output), kind: 'ZIP' } })
     }
 
-    const mixed = path.join(OUTPUTS_DIR, `sound-stitch-${stamp}.mp3`)
+    const mixed = path.join(mode === 'mix' ? AUDIO_OUTPUTS_DIR : OUTPUTS_DIR, `sound-stitch-${stamp}.mp3`)
     updateJob(job, { progress: 12, message: '음량을 적용해 이어 붙이고 있어요' })
     await mixTracks(items, mixed, job)
     if (mode === 'mix') {
-      return updateJob(job, { status: 'done', progress: 100, message: '믹스 MP3 완성', result: { url: `/media/outputs/${path.basename(mixed)}`, filename: path.basename(mixed), kind: 'MP3' } })
+      const completed = updateJob(job, { status: 'done', progress: 100, message: '믹스 MP3 완성', result: { url: `/audio-output/${path.basename(mixed)}`, filename: path.basename(mixed), kind: 'MP3' } })
+      if (typeof lifecycleHooks.onAudioComplete === 'function') lifecycleHooks.onAudioComplete(mixed)
+      return completed
     }
 
     if (!imageFile) throw new Error('영상에 사용할 이미지를 선택해 주세요.')
@@ -340,6 +343,7 @@ const upload = multer({
 app.use(express.json({ limit: '1mb' }))
 app.use(express.static(path.join(ROOT, 'public')))
 app.use('/media', express.static(DATA, { fallthrough: false }))
+app.use('/audio-output', express.static(AUDIO_OUTPUTS_DIR, { fallthrough: false }))
 app.use('/video-output', express.static(VIDEO_OUTPUTS_DIR, { fallthrough: false }))
 
 app.get('/api/health', (_req, res) => res.json({ ok: Boolean(ffmpegPath && existsSync(ffmpegPath) && existsSync(YTDLP)) }))

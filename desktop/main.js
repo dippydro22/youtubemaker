@@ -16,9 +16,13 @@ app.on('second-instance', () => {
 
 async function createWindow () {
   process.env.SOUND_STITCH_DATA_DIR ||= path.join(app.getPath('userData'), 'data')
+  process.env.SOUND_STITCH_AUDIO_OUTPUT_DIR ||= path.join(app.getPath('music'), 'Sound Stitch')
   process.env.SOUND_STITCH_VIDEO_OUTPUT_DIR ||= path.join(app.getPath('videos'), 'Sound Stitch')
   const { setLifecycleHooks, startServer } = require('../server')
   setLifecycleHooks({
+    onAudioComplete: audioPath => {
+      if (process.env.SOUND_STITCH_SKIP_REVEAL !== '1') shell.showItemInFolder(audioPath)
+    },
     onVideoComplete: videoPath => {
       if (process.env.SOUND_STITCH_SKIP_REVEAL !== '1') shell.showItemInFolder(videoPath)
       setTimeout(() => app.quit(), 2500)
