@@ -79,6 +79,7 @@ async function main () {
     const port = await waitForPort(child)
     const mixForm = new FormData()
     mixForm.append('mode', 'mix')
+    mixForm.append('normalizeAudio', 'true')
     mixForm.append('items', JSON.stringify([{ id: 'tone', volume: 1, showCaption: true, caption: 'MP3 저장 테스트' }]))
     const mixResponse = await fetch(`http://127.0.0.1:${port}/api/render`, { method: 'POST', body: mixForm })
     const mixPayload = await mixResponse.json()
@@ -90,6 +91,7 @@ async function main () {
 
     const form = new FormData()
     form.append('mode', 'video')
+    form.append('normalizeAudio', 'true')
     form.append('items', JSON.stringify([{ id: 'tone', volume: 1, showCaption: true, caption: '자동 종료 테스트' }]))
     form.append('image', new Blob([readFileSync(cover)], { type: 'image/png' }), 'cover.png')
     const response = await fetch(`http://127.0.0.1:${port}/api/render`, { method: 'POST', body: form })

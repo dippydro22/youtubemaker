@@ -56,6 +56,7 @@ async function poll (jobId) {
 async function render (mode, items, image) {
   const form = new FormData()
   form.append('mode', mode)
+  form.append('normalizeAudio', String(mode !== 'extract'))
   form.append('items', JSON.stringify(items))
   if (image) form.append('image', new Blob([readFileSync(image)], { type: 'image/png' }), 'cover.png')
   const response = await fetch(`http://127.0.0.1:${port}/api/render`, { method: 'POST', body: form })

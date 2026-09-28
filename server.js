@@ -61,7 +61,7 @@ function cleanSession (value) {
     }
     if (raw.volume == null) settings[trackId].volume = 100
   }
-  return { order, settings }
+  return { order, settings, normalizeAudio: value?.normalizeAudio !== false }
 }
 
 function saveSession (value) {
@@ -182,13 +182,14 @@ function transitionDuration (first, second) {
   return Number(Math.min(3, ...(durations.length ? durations.map(duration => Math.max(0.1, duration / 2)) : [3])).toFixed(2))
 }
 
-async function mixTracks (items, output, job) {
+async function mixTracks (items, output, job, normalizeAudio = false) {
   const inputs = []
   const filters = []
   items.forEach((item, index) => {
     inputs.push('-i', item.track.file)
     const volume = Math.max(0, Math.min(2, Number(item.volume) || 0))
-    filters.push(`[${index}:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${volume}[a${index}]`)
+    const normalize = normalizeAudio ? 'loudnorm=I=-16:TP=-1.5:LRA=11,' : ''
+    filters.push(`[${index}:a]${normalize}aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${volume}[a${index}]`)
   })
   if (items.length === 1) {
     filters.push('[a0]anull[outa]')
@@ -277,7 +278,7 @@ function ffmpegFilterPath (file) {
   return file.replace(/\\/g, '/').replace(/^([A-Za-z]):/, '$1\\:').replace(/'/g, "\\'")
 }
 
-async function render (job, mode, rawItems, imageFile) {
+async function render (job, mode, rawItems, imageFile, normalizeAudio = false) {
   let captionFile
   try {
     const items = rawItems.map(item => ({
@@ -297,8 +298,8 @@ async function render (job, mode, rawItems, imageFile) {
     }
 
     const mixed = path.join(mode === 'mix' ? AUDIO_OUTPUTS_DIR : OUTPUTS_DIR, `sound-stitch-${stamp}.mp3`)
-    updateJob(job, { progress: 12, message: '음량을 적용해 이어 붙이고 있어요' })
-    await mixTracks(items, mixed, job)
+    updateJob(job, { progress: 12, message: normalizeAudio ? '곡별 체감 음량을 일정하게 맞추고 있어요' : '음량을 적용해 이어 붙이고 있어요' })
+    await mixTracks(items, mixed, job, normalizeAudio)
     if (mode === 'mix') {
       const completed = updateJob(job, { status: 'done', progress: 100, message: '믹스 MP3 완성', result: { url: `/audio-output/${path.basename(mixed)}`, filename: path.basename(mixed), kind: 'MP3' } })
       if (typeof lifecycleHooks.onAudioComplete === 'function') lifecycleHooks.onAudioComplete(mixed)
@@ -384,11 +385,12 @@ app.post('/api/render', upload.single('image'), (req, res) => {
   let items
   try { items = JSON.parse(req.body.items || '[]') } catch { items = [] }
   const mode = ['extract', 'mix', 'video'].includes(req.body.mode) ? req.body.mode : 'mix'
+  const normalizeAudio = req.body.normalizeAudio === 'true'
   if (!items.length) return res.status(400).json({ error: '한 개 이상의 음원을 등록해 주세요.' })
   if (mode === 'video' && !req.file) return res.status(400).json({ error: '영상에 사용할 이미지를 선택해 주세요.' })
   const job = createJob('render', '출력 작업을 시작할게요')
   res.status(202).json({ jobId: job.id })
-  render(job, mode, items, req.file?.path)
+  render(job, mode, items, req.file?.path, normalizeAudio)
 })
 
 app.use((error, _req, res, _next) => res.status(500).json({ error: cleanError(error) }))

@@ -2,6 +2,7 @@ const state = {
   tracks: [],
   volumes: {},
   captions: {},
+  normalizeAudio: true,
   image: null,
   busy: false,
   sessionReady: false
@@ -21,6 +22,8 @@ const els = {
   imageInput: $('#image-input'),
   imageButton: $('#image-button'),
   imagePreview: $('#image-preview'),
+  normalizeOption: $('#normalize-option'),
+  normalizeAudio: $('#normalize-audio'),
   renderButton: $('#render-button'),
   renderLabel: $('#render-label'),
   renderStatus: $('#render-status'),
@@ -90,7 +93,8 @@ function sessionPayload () {
       volume: state.volumes[track.id] ?? 100,
       captionEnabled: state.captions[track.id]?.enabled !== false,
       caption: state.captions[track.id]?.text || track.title
-    }]))
+    }])),
+    normalizeAudio: state.normalizeAudio
   }
 }
 
@@ -250,10 +254,17 @@ document.querySelectorAll('input[name="mode"]').forEach(input => {
   input.addEventListener('change', () => {
     document.querySelectorAll('.mode-card').forEach(card => card.classList.toggle('selected', card.contains(input)))
     els.imagePicker.hidden = input.value !== 'video'
+    els.normalizeAudio.disabled = input.value === 'extract'
+    els.normalizeOption.classList.toggle('disabled', input.value === 'extract')
     els.renderLabel.textContent = modeLabels[input.value]
     els.resultCard.hidden = true
     updateSummary()
   })
+})
+
+els.normalizeAudio.addEventListener('change', () => {
+  state.normalizeAudio = els.normalizeAudio.checked
+  scheduleSessionSave()
 })
 
 els.imageButton.addEventListener('click', () => els.imageInput.click())
@@ -297,6 +308,7 @@ els.renderButton.addEventListener('click', async () => {
   const mode = currentMode()
   const form = new FormData()
   form.append('mode', mode)
+  form.append('normalizeAudio', String(state.normalizeAudio && mode !== 'extract'))
   form.append('items', JSON.stringify(state.tracks.map(track => ({
     id: track.id,
     volume: (state.volumes[track.id] ?? 100) / 100,
@@ -331,6 +343,8 @@ async function init () {
     if (!health.ok) throw new Error('음원 처리 도구를 찾지 못했습니다. 다시 설치해 주세요.')
     const byId = new Map(tracks.map(track => [track.id, track]))
     state.tracks = (session.order || []).map(trackId => byId.get(trackId)).filter(Boolean)
+    state.normalizeAudio = session.normalizeAudio !== false
+    els.normalizeAudio.checked = state.normalizeAudio
     tracks.forEach(track => { if (!state.tracks.some(saved => saved.id === track.id)) state.tracks.push(track) })
     state.tracks.forEach(track => {
       const saved = session.settings?.[track.id]
