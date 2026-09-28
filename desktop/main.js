@@ -10,6 +10,7 @@ if (!gotLock) app.quit()
 app.on('second-instance', () => {
   if (!mainWindow) return
   if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
   mainWindow.focus()
 })
 
@@ -33,7 +34,7 @@ async function createWindow () {
     title: 'Sound Stitch',
     backgroundColor: '#07101d',
     autoHideMenuBar: true,
-    show: false,
+    show: true,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -48,7 +49,6 @@ async function createWindow () {
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith(`http://127.0.0.1:${port}/`)) event.preventDefault()
   })
-  mainWindow.once('ready-to-show', () => mainWindow.show())
   await mainWindow.loadURL(`http://127.0.0.1:${port}`)
 }
 
